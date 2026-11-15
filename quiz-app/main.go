@@ -7,14 +7,14 @@ import (
 )
 
 func main() {
-	newStore, err := NewNoteStore("notes.json")
+	addr := flag.String("addr", ":8080", "address to listen on")
+	flag.Parse()
+
+	newStore, err := NewNoteStore("notes.db")
 	if err != nil {
 		log.Fatal(err)
 	}
 	srv := &server{store: newStore}
-
-	addr := flag.String("addr", ":8080", "address to listen on")
-	flag.Parse()
 
 	mux := http.NewServeMux()
 

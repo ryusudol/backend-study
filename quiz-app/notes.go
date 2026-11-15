@@ -1,14 +1,12 @@
 package main
 
 import (
-	"cmp"
-	"encoding/json"
+	"database/sql"
 	"errors"
 	"fmt"
-	"os"
-	"slices"
-	"sync"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 var ErrNotFound = errors.New("note not found")
@@ -20,133 +18,104 @@ type Note struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-type storeFile struct {
-	NextID int    `json:"next_id"`
-	Notes  []Note `json:"notes"`
+type NoteStore struct {
+	db *sql.DB
 }
 
-type NoteStore struct {
-	mu     sync.Mutex
-	path   string
-	notes  map[int]Note
-	nextID int
-}
+const schema = `
+CREATE TABLE IF NOT EXISTS notes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    title      TEXT      NOT NULL,
+    content    TEXT      NOT NULL,
+    created_at TIMESTAMP NOT NULL
+)`
 
 func NewNoteStore(path string) (*NoteStore, error) {
-	s := &NoteStore{
-		path:   path,
-		notes:  make(map[int]Note),
-		nextID: 1,
-	}
-
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return s, nil
-	} else if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
-	}
-
-	var f storeFile
-	if err := json.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
-	}
-
-	var largestID int
-	for _, note := range f.Notes {
-		s.notes[note.ID] = note
-		largestID = max(largestID, note.ID)
-	}
-
-	if f.NextID <= largestID {
-		return nil, fmt.Errorf("invalid %s: NextID must be greater than the largest note id %d", path, largestID)
-	}
-	s.nextID = f.NextID
-
-	return s, nil
-}
-
-// The caller must already hold s.mu
-func (s *NoteStore) save() error {
-	f := storeFile{NextID: s.nextID, Notes: s.noteList()}
-
-	data, err := json.MarshalIndent(f, "", "  ")
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 
-	return os.WriteFile(s.path, data, 0644)
+	if _, err := db.Exec(schema); err != nil {
+		return nil, fmt.Errorf("schema %s: %w", schema, err)
+	}
+
+	return &NoteStore{db: db}, nil
 }
 
-// The caller must already hold s.mu
-func (s *NoteStore) noteList() []Note {
-	notes := make([]Note, 0, len(s.notes))
-
-	for _, note := range s.notes {
-		notes = append(notes, note)
-	}
-
-	slices.SortFunc(notes, func(a, b Note) int {
-		return cmp.Compare(a.ID, b.ID)
-	})
-
-	return notes
+func (s *NoteStore) Close() error {
+	return s.db.Close()
 }
 
 func (s *NoteStore) Create(title, content string) (Note, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	note := Note{Title: title, Content: content, CreatedAt: time.Now().UTC()}
 
-	newNote := Note{
-		ID:        s.nextID,
-		Title:     title,
-		Content:   content,
-		CreatedAt: time.Now(),
-	}
+	err := s.db.QueryRow(
+		`INSERT INTO notes (title, content, created_at) VALUES (?, ?, ?) RETURNING id`,
+		note.Title, note.Content, note.CreatedAt,
+	).Scan(&note.ID)
 
-	s.notes[newNote.ID] = newNote
-	s.nextID++
-
-	if err := s.save(); err != nil {
-		delete(s.notes, newNote.ID)
-		s.nextID--
+	if err != nil {
 		return Note{}, err
 	}
 
-	return newNote, nil
+	return note, nil
 }
 
-func (s *NoteStore) Get(id int) (Note, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *NoteStore) Get(id int) (Note, error) {
+	var note Note
 
-	note, ok := s.notes[id]
-	return note, ok
+	err := s.db.QueryRow(
+		`SELECT id, title, content, created_at FROM notes WHERE id = ?`, id,
+	).Scan(&note.ID, &note.Title, &note.Content, &note.CreatedAt)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return Note{}, ErrNotFound
+	} else if err != nil {
+		return Note{}, err
+	}
+
+	return note, nil
 }
 
-func (s *NoteStore) List() []Note {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *NoteStore) List() ([]Note, error) {
+	rows, err := s.db.Query(`SELECT id, title, content, created_at FROM notes ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 
-	return s.noteList()
+	notes := make([]Note, 0)
+
+	for rows.Next() {
+		var note Note
+
+		err := rows.Scan(&note.ID, &note.Title, &note.Content, &note.CreatedAt)
+		if err != nil {
+			return nil, err
+		}
+
+		notes = append(notes, note)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return notes, nil
 }
 
 func (s *NoteStore) Update(id int, title, content string) (Note, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	var note Note
 
-	old, ok := s.notes[id]
-	if !ok {
+	err := s.db.QueryRow(`
+		UPDATE notes SET title = ?, content = ? WHERE id = ?
+		RETURNING id, title, content, created_at`, title, content, id,
+	).Scan(&note.ID, &note.Title, &note.Content, &note.CreatedAt)
+
+	if errors.Is(err, sql.ErrNoRows) {
 		return Note{}, ErrNotFound
-	}
-
-	note := old
-	note.Title = title
-	note.Content = content
-
-	s.notes[id] = note
-
-	if err := s.save(); err != nil {
-		s.notes[id] = old
+	} else if err != nil {
 		return Note{}, err
 	}
 
@@ -154,19 +123,17 @@ func (s *NoteStore) Update(id int, title, content string) (Note, error) {
 }
 
 func (s *NoteStore) Delete(id int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	old, ok := s.notes[id]
-	if !ok {
-		return ErrNotFound
+	res, err := s.db.Exec(`DELETE FROM notes WHERE id = ?`, id)
+	if err != nil {
+		return err
 	}
 
-	delete(s.notes, id)
-
-	if err := s.save(); err != nil {
-		s.notes[id] = old
+	n, err := res.RowsAffected()
+	if err != nil {
 		return err
+	}
+	if n == 0 {
+		return ErrNotFound
 	}
 
 	return nil

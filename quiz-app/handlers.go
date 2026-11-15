@@ -66,8 +66,8 @@ func (s *server) getNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	note, ok := s.store.Get(id)
-	if !ok {
+	note, err := s.store.Get(id)
+	if err != nil {
 		writeError(w, http.StatusNotFound, "note not found")
 		return
 	}
@@ -76,7 +76,13 @@ func (s *server) getNote(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) listNotes(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.store.List())
+	notes, err := s.store.List()
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, notes)
 }
 
 func (s *server) updateNote(w http.ResponseWriter, r *http.Request) {
