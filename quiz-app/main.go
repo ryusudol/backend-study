@@ -1,12 +1,20 @@
 package main
 
 import (
+	"flag"
 	"log"
 	"net/http"
 )
 
 func main() {
-	srv := &server{store: NewNoteStore()}
+	newStore, err := NewNoteStore("notes.json")
+	if err != nil {
+		log.Fatal(err)
+	}
+	srv := &server{store: newStore}
+
+	addr := flag.String("addr", ":8080", "address to listen on")
+	flag.Parse()
 
 	mux := http.NewServeMux()
 
@@ -20,6 +28,6 @@ func main() {
 	mux.HandleFunc("/notes/{id}", methodNotAllowed("GET, PUT, DELETE"))
 	mux.HandleFunc("/", notFound)
 
-	log.Println("listening on :8080")
-	log.Fatal(http.ListenAndServe(":8080", mux))
+	log.Println("listening on", *addr)
+	log.Fatal(http.ListenAndServe(*addr, mux))
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -17,6 +18,25 @@ type noteInput struct {
 	Content string `json:"content"`
 }
 
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Println("error writing json:", err)
+	}
+}
+
+func writeError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{
+		"error": msg,
+	})
+}
+
+func writeInternalError(w http.ResponseWriter, err error) {
+	log.Println("error:", err)
+	writeError(w, http.StatusInternalServerError, "internal error")
+}
+
 func (s *server) createNote(w http.ResponseWriter, r *http.Request) {
 	var input noteInput
 
@@ -30,7 +50,12 @@ func (s *server) createNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	note := s.store.Create(input.Title, input.Content)
+	note, err := s.store.Create(input.Title, input.Content)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
 	writeJSON(w, http.StatusCreated, note)
 }
 
@@ -48,20 +73,6 @@ func (s *server) getNote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, note)
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		log.Println("error writing json:", err)
-	}
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{
-		"error": msg,
-	})
 }
 
 func (s *server) listNotes(w http.ResponseWriter, r *http.Request) {
@@ -87,9 +98,13 @@ func (s *server) updateNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	note, ok := s.store.Update(id, input.Title, input.Content)
-	if !ok {
+	note, err := s.store.Update(id, input.Title, input.Content)
+	if errors.Is(err, ErrNotFound) {
 		writeError(w, http.StatusNotFound, "note not found")
+		return
+	}
+	if err != nil {
+		writeInternalError(w, err)
 		return
 	}
 
@@ -103,9 +118,13 @@ func (s *server) deleteNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deleted := s.store.Delete(id)
-	if !deleted {
+	err = s.store.Delete(id)
+	if errors.Is(err, ErrNotFound) {
 		writeError(w, http.StatusNotFound, "note not found")
+		return
+	}
+	if err != nil {
+		writeInternalError(w, err)
 		return
 	}
 

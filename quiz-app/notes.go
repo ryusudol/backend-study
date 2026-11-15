@@ -2,10 +2,16 @@ package main
 
 import (
 	"cmp"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
 	"slices"
 	"sync"
 	"time"
 )
+
+var ErrNotFound = errors.New("note not found")
 
 type Note struct {
 	ID        int       `json:"id"`
@@ -14,20 +20,79 @@ type Note struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type storeFile struct {
+	NextID int    `json:"next_id"`
+	Notes  []Note `json:"notes"`
+}
+
 type NoteStore struct {
-	mu     sync.Mutex // must hold to read/write
+	mu     sync.Mutex
+	path   string
 	notes  map[int]Note
 	nextID int
 }
 
-func NewNoteStore() *NoteStore {
-	return &NoteStore{
+func NewNoteStore(path string) (*NoteStore, error) {
+	s := &NoteStore{
+		path:   path,
 		notes:  make(map[int]Note),
 		nextID: 1,
 	}
+
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return s, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+
+	var f storeFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+
+	var largestID int
+	for _, note := range f.Notes {
+		s.notes[note.ID] = note
+		largestID = max(largestID, note.ID)
+	}
+
+	if f.NextID <= largestID {
+		return nil, fmt.Errorf("invalid %s: NextID must be greater than the largest note id %d", path, largestID)
+	}
+	s.nextID = f.NextID
+
+	return s, nil
 }
 
-func (s *NoteStore) Create(title, content string) Note {
+// The caller must already hold s.mu
+func (s *NoteStore) save() error {
+	f := storeFile{NextID: s.nextID, Notes: s.noteList()}
+
+	data, err := json.MarshalIndent(f, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(s.path, data, 0644)
+}
+
+// The caller must already hold s.mu
+func (s *NoteStore) noteList() []Note {
+	notes := make([]Note, 0, len(s.notes))
+
+	for _, note := range s.notes {
+		notes = append(notes, note)
+	}
+
+	slices.SortFunc(notes, func(a, b Note) int {
+		return cmp.Compare(a.ID, b.ID)
+	})
+
+	return notes
+}
+
+func (s *NoteStore) Create(title, content string) (Note, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -41,7 +106,13 @@ func (s *NoteStore) Create(title, content string) Note {
 	s.notes[newNote.ID] = newNote
 	s.nextID++
 
-	return newNote
+	if err := s.save(); err != nil {
+		delete(s.notes, newNote.ID)
+		s.nextID--
+		return Note{}, err
+	}
+
+	return newNote, nil
 }
 
 func (s *NoteStore) Get(id int) (Note, bool) {
@@ -56,46 +127,47 @@ func (s *NoteStore) List() []Note {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	notes := make([]Note, 0, len(s.notes))
-
-	for _, note := range s.notes {
-		notes = append(notes, note)
-	}
-
-	slices.SortFunc(notes, func(a, b Note) int {
-		return cmp.Compare(a.ID, b.ID)
-	})
-
-	return notes
+	return s.noteList()
 }
 
-func (s *NoteStore) Update(id int, title, content string) (Note, bool) {
+func (s *NoteStore) Update(id int, title, content string) (Note, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	note, ok := s.notes[id]
+	old, ok := s.notes[id]
 	if !ok {
-		return Note{}, false
+		return Note{}, ErrNotFound
 	}
 
+	note := old
 	note.Title = title
 	note.Content = content
 
 	s.notes[id] = note
 
-	return note, true
+	if err := s.save(); err != nil {
+		s.notes[id] = old
+		return Note{}, err
+	}
+
+	return note, nil
 }
 
-func (s *NoteStore) Delete(id int) bool {
+func (s *NoteStore) Delete(id int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, ok := s.notes[id]
+	old, ok := s.notes[id]
 	if !ok {
-		return false
+		return ErrNotFound
 	}
 
 	delete(s.notes, id)
 
-	return true
+	if err := s.save(); err != nil {
+		s.notes[id] = old
+		return err
+	}
+
+	return nil
 }
