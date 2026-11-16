@@ -14,5 +14,5 @@ This is a learning project. The goal is for me to learn backend engineering from
 ## Setup
 
 - Language: Go (standard library first, no frameworks)
-- Layout: one folder per stage while it's throwaway (`01-raw-http/`), then a single growing project from stage 2 on
+- Layout: one folder per stage while it's throwaway (`raw-http/`), then a single growing project from stage 2 on
 - Tools: terminal, git, `curl -v`

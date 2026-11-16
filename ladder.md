@@ -8,7 +8,7 @@ Progress is measured by **checkpoints, not time**. Move on once you can do every
 ## Setup
 
 - **Language:** Go. Its standard library covers HTTP, SQL and concurrency with nothing hidden, concurrency is built into the language (goroutines, channels), and it means getting comfortable in a language other than Python.
-- **Layout:** one folder per stage while it's a throwaway (`01-raw-http/`). From stage 2 on, one project that keeps growing.
+- **Layout:** one folder per stage while it's a throwaway (`raw-http/`). From stage 2 on, one project that keeps growing.
 - **Tools:** terminal, git, `curl -v`.
 
 ---
