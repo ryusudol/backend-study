@@ -8,9 +8,11 @@ import (
 
 func main() {
 	addr := flag.String("addr", ":8080", "address to listen on")
+	dsn := flag.String("db", "postgres://quiz:quiz@localhost:5432/quiz?sslmode=disable", "postgres DSN")
+
 	flag.Parse()
 
-	newStore, err := NewNoteStore("notes.db")
+	newStore, err := NewNoteStore(*dsn)
 	if err != nil {
 		log.Fatal(err)
 	}
